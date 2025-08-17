@@ -1,0 +1,614 @@
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { Play, Pause, Square, Volume2, RotateCcw, Plus, Trash2, Settings } from 'lucide-react';
+import * as Tone from 'tone';
+
+const UkuleleTabsApp = () => {
+  // Données des accords de ukulélé (position des doigts sur les frettes)
+  const chordCategories = {
+    'Majeurs': {
+      'C': [0, 0, 0, 3],
+      'D': [2, 2, 2, 0],
+      'E': [4, 4, 4, 2],
+      'F': [2, 0, 1, 0],
+      'G': [0, 2, 3, 2],
+      'A': [2, 1, 0, 0],
+      'B': [4, 3, 2, 2],
+    },
+    'Mineurs': {
+      'Cm': [0, 3, 3, 3],
+      'Dm': [2, 2, 1, 0],
+      'Em': [0, 4, 3, 2],
+      'Fm': [1, 0, 1, 3],
+      'Gm': [0, 2, 3, 1],
+      'Am': [2, 0, 0, 0],
+      'Bm': [4, 2, 2, 2],
+    },
+    'Septième': {
+      'C7': [0, 0, 0, 1],
+      'D7': [2, 2, 2, 3],
+      'E7': [1, 2, 0, 2],
+      'F7': [2, 3, 1, 3],
+      'G7': [0, 2, 1, 2],
+      'A7': [0, 1, 0, 0],
+      'B7': [2, 3, 2, 2],
+    },
+    'Majeur 7ème': {
+      'Cmaj7': [0, 0, 0, 2],
+      'Dmaj7': [2, 2, 2, 4],
+      'Fmaj7': [2, 4, 1, 3],
+      'Gmaj7': [0, 2, 2, 2],
+    }
+  };
+
+  // Créer un objet plat pour la compatibilité
+  const chordData = {};
+  Object.values(chordCategories).forEach(category => {
+    Object.assign(chordData, category);
+  });
+
+  // Notes correspondant aux cordes du ukulélé (accordage standard GCEA)
+  const stringNotes = ['G4', 'C4', 'E4', 'A4'];
+  
+  const [selectedChord, setSelectedChord] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [sequence, setSequence] = useState([]);
+  const [bpm, setBpm] = useState(120);
+  const [repeatsPerMeasure, setRepeatsPerMeasure] = useState(4);
+  const [currentChordIndex, setCurrentChordIndex] = useState(-1);
+  const [expandedCategories, setExpandedCategories] = useState({ 'Majeurs': true });
+  
+  const synthRef = useRef(null);
+  const sequenceRef = useRef(null);
+  const currentPlayIndex = useRef(0);
+  
+  // Initialisation du synthétiseur
+  useEffect(() => {
+    synthRef.current = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: "triangle" },
+      envelope: { attack: 0.02, decay: 0.1, sustain: 0.3, release: 1 }
+    }).toDestination();
+    
+    return () => {
+      if (synthRef.current) {
+        synthRef.current.dispose();
+      }
+    };
+  }, []);
+
+  // Composant pour afficher un accord en tablature (grand)
+  const ChordDiagram = ({ chord, frets, isActive = false }) => {
+    const maxFret = Math.max(...frets, 4);
+    const fretCount = maxFret < 4 ? 4 : maxFret + 1;
+    
+    return (
+      <div className={`p-6 border-2 rounded-lg ${isActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300'}`}>
+        <h3 className="text-center font-bold text-2xl mb-4">{chord}</h3>
+        <div className="relative bg-amber-50 p-8 rounded" style={{ minWidth: '280px', minHeight: '320px' }}>
+          {/* Cordes (lignes verticales) */}
+          {[0, 1, 2, 3].map(string => (
+            <div
+              key={string}
+              className="absolute bg-gray-800"
+              style={{
+                left: `${20 + string * 20}%`,
+                top: '15px',
+                bottom: '15px',
+                width: '3px'
+              }}
+            />
+          ))}
+          
+          {/* Frettes (lignes horizontales) */}
+          {Array.from({ length: fretCount + 1 }, (_, fret) => (
+            <div
+              key={fret}
+              className={`absolute bg-gray-600 ${fret === 0 ? 'h-2' : 'h-1'}`}
+              style={{
+                top: `${15 + fret * 40}px`,
+                left: '12%',
+                right: '12%'
+              }}
+            />
+          ))}
+          
+          {/* Points pour les doigts */}
+          {frets.map((fret, string) => {
+            if (fret === 0) {
+              // Corde à vide - cercle ouvert au-dessus
+              return (
+                <div
+                  key={string}
+                  className="absolute w-6 h-6 border-3 border-gray-800 bg-white rounded-full"
+                  style={{
+                    left: `${14 + string * 20}%`,
+                    top: '-12px'
+                  }}
+                />
+              );
+            } else {
+              // Doigt sur une frette - point plein
+              return (
+                <div
+                  key={string}
+                  className="absolute w-6 h-6 bg-gray-800 rounded-full flex items-center justify-center"
+                  style={{
+                    left: `${14 + string * 20}%`,
+                    top: `${15 + (fret - 0.5) * 40}px`
+                  }}
+                >
+                  <span className="text-white text-sm font-bold">{fret}</span>
+                </div>
+              );
+            }
+          })}
+          
+          {/* Numéros des cordes */}
+          <div className="absolute -bottom-8 left-0 right-0 flex justify-between px-8">
+            {['G', 'C', 'E', 'A'].map((note, index) => (
+              <span key={index} className="text-sm font-bold text-gray-600">{note}</span>
+            ))}
+          </div>
+          
+          {/* Hauteur du diagramme */}
+          <div style={{ height: `${(fretCount + 1) * 40}px` }} />
+        </div>
+      </div>
+    );
+  };
+
+  // Composant pour afficher une mini tablature sur les boutons
+  const MiniChordDiagram = ({ frets }) => {
+    return (
+      <div className="relative bg-amber-100 rounded p-2" style={{ width: '60px', height: '50px' }}>
+        {/* Cordes (lignes verticales) */}
+        {[0, 1, 2, 3].map(string => (
+          <div
+            key={string}
+            className="absolute bg-gray-700"
+            style={{
+              left: `${15 + string * 20}%`,
+              top: '8px',
+              bottom: '8px',
+              width: '1px'
+            }}
+          />
+        ))}
+        
+        {/* Frettes (lignes horizontales) */}
+        {[0, 1, 2, 3, 4].map(fret => (
+          <div
+            key={fret}
+            className={`absolute bg-gray-600 ${fret === 0 ? 'h-0.5' : 'h-px'}`}
+            style={{
+              top: `${8 + fret * 8}px`,
+              left: '10%',
+              right: '10%'
+            }}
+          />
+        ))}
+        
+        {/* Points pour les doigts */}
+        {frets.map((fret, string) => {
+          if (fret === 0) {
+            // Corde à vide - petit cercle ouvert
+            return (
+              <div
+                key={string}
+                className="absolute w-2 h-2 border border-gray-700 bg-white rounded-full"
+                style={{
+                  left: `${11 + string * 20}%`,
+                  top: '2px'
+                }}
+              />
+            );
+          } else if (fret <= 4) {
+            // Doigt sur une frette - petit point plein
+            return (
+              <div
+                key={string}
+                className="absolute w-2 h-2 bg-gray-700 rounded-full"
+                style={{
+                  left: `${11 + string * 20}%`,
+                  top: `${8 + (fret - 0.5) * 8}px`
+                }}
+              />
+            );
+          }
+          return null;
+        })}
+      </div>
+    );
+  };
+
+  // Fonction pour jouer un accord
+  const playChord = async (chordName) => {
+    if (!synthRef.current) return;
+    
+    await Tone.start();
+    const frets = chordData[chordName];
+    const notes = frets.map((fret, string) => {
+      const baseNote = stringNotes[string];
+      if (fret === 0) return baseNote;
+      
+      const noteNumber = Tone.Frequency(baseNote).toMidi() + fret;
+      return Tone.Frequency(noteNumber, 'midi').toNote();
+    });
+    
+    synthRef.current.triggerAttackRelease(notes, '2n');
+  };
+
+  // Fonction pour basculer l'état d'une catégorie
+  const toggleCategory = (categoryName) => {
+    setExpandedCategories(prev => ({
+      ...prev,
+      [categoryName]: !prev[categoryName]
+    }));
+  };
+  const addToSequence = (chordName) => {
+    setSequence(prev => [...prev, chordName]);
+  };
+
+  // Supprimer un accord spécifique de la séquence par index
+  const removeFromSequenceByIndex = (index) => {
+    setSequence(prev => prev.filter((_, i) => i !== index));
+  };
+  const removeFromSequence = (index) => {
+    setSequence(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // Vider la séquence
+  const clearSequence = () => {
+    setSequence([]);
+    stopSequence();
+  };
+
+  // Jouer la séquence
+  const playSequence = async () => {
+    if (sequence.length === 0 || !synthRef.current) return;
+    
+    await Tone.start();
+    setIsPlaying(true);
+    setCurrentChordIndex(0);
+    currentPlayIndex.current = 0;
+    
+    // Arrêter la séquence précédente si elle existe
+    if (sequenceRef.current) {
+      Tone.Transport.clear(sequenceRef.current);
+    }
+    
+    // Calculer l'intervalle entre chaque accord en secondes
+    const chordDuration = (60 / bpm) * (4 / repeatsPerMeasure);
+    
+    sequenceRef.current = Tone.Transport.scheduleRepeat((time) => {
+      if (currentPlayIndex.current >= sequence.length) {
+        currentPlayIndex.current = 0; // Recommencer la séquence
+      }
+      
+      const currentChord = sequence[currentPlayIndex.current];
+      setCurrentChordIndex(currentPlayIndex.current);
+      
+      const frets = chordData[currentChord];
+      const notes = frets.map((fret, string) => {
+        const baseNote = stringNotes[string];
+        if (fret === 0) return baseNote;
+        
+        const noteNumber = Tone.Frequency(baseNote).toMidi() + fret;
+        return Tone.Frequency(noteNumber, 'midi').toNote();
+      });
+      
+      synthRef.current.triggerAttackRelease(notes, chordDuration * 0.8, time);
+      
+      // Passer au prochain accord
+      currentPlayIndex.current = (currentPlayIndex.current + 1) % sequence.length;
+    }, chordDuration);
+    
+    Tone.Transport.bpm.value = bpm;
+    Tone.Transport.start();
+  };
+
+  // Arrêter la séquence
+  const stopSequence = () => {
+    setIsPlaying(false);
+    setCurrentChordIndex(-1);
+    currentPlayIndex.current = 0;
+    Tone.Transport.stop();
+    Tone.Transport.cancel();
+    if (sequenceRef.current) {
+      Tone.Transport.clear(sequenceRef.current);
+      sequenceRef.current = null;
+    }
+  };
+
+  // Pause/reprendre la séquence
+  const toggleSequence = () => {
+    if (isPlaying) {
+      Tone.Transport.pause();
+      setIsPlaying(false);
+    } else {
+      Tone.Transport.start();
+      setIsPlaying(true);
+    }
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto p-6 bg-gray-50 min-h-screen">
+      <header className="text-center mb-8">
+        <h1 className="text-4xl font-bold text-gray-800 mb-2">🎵 Ukulélé Tabs</h1>
+        <p className="text-gray-600">Apprenez les accords et créez vos séquences musicales</p>
+      </header>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Section des accords */}
+        <div className="lg:col-span-2">
+          <div className="bg-white rounded-lg shadow-lg p-6">
+            <h2 className="text-2xl font-bold mb-4">Accords disponibles</h2>
+            
+            {/* Accord sélectionné - Affichage conditionnel */}
+            {selectedChord && (
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold">Accord sélectionné: {selectedChord}</h3>
+                  <button
+                    onClick={() => setSelectedChord(null)}
+                    className="px-3 py-1 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors text-sm"
+                  >
+                    ✕ Fermer
+                  </button>
+                </div>
+                
+                <div className="flex justify-center mb-4">
+                  <ChordDiagram 
+                    chord={selectedChord} 
+                    frets={chordData[selectedChord]}
+                    isActive={true}
+                  />
+                </div>
+                
+                <div className="flex justify-center gap-4">
+                  <button
+                    onClick={() => playChord(selectedChord)}
+                    className="flex items-center gap-2 px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+                  >
+                    <Volume2 size={20} />
+                    Pré-écouter
+                  </button>
+                  <button
+                    onClick={() => addToSequence(selectedChord)}
+                    className="flex items-center gap-2 px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                  >
+                    <Plus size={20} />
+                    Ajouter à la séquence
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Grille des accords par catégories */}
+            <div className="space-y-6">
+              {Object.entries(chordCategories).map(([categoryName, chords]) => (
+                <div key={categoryName} className="border border-gray-200 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleCategory(categoryName)}
+                    className="w-full px-4 py-3 bg-gray-100 hover:bg-gray-200 flex items-center justify-between font-semibold text-left transition-colors"
+                  >
+                    <span className="text-lg">{categoryName}</span>
+                    <span className={`transform transition-transform ${expandedCategories[categoryName] ? 'rotate-180' : ''}`}>
+                      ▼
+                    </span>
+                  </button>
+                  
+                  {expandedCategories[categoryName] && (
+                    <div className="p-4 bg-white">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                        {Object.entries(chords).map(([chord, frets]) => {
+                          const isInSequence = sequence.includes(chord);
+                          return (
+                            <div key={chord} className="relative">
+                              <button
+                                onClick={() => setSelectedChord(chord)}
+                                className={`w-full p-3 rounded-lg border-2 transition-all hover:shadow-lg ${
+                                  selectedChord === chord 
+                                    ? 'border-blue-500 bg-blue-50 shadow-lg transform scale-105' 
+                                    : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50'
+                                }`}
+                              >
+                                <div className="text-lg font-bold mb-2">{chord}</div>
+                                <MiniChordDiagram frets={frets} />
+                              </button>
+                              
+                              {/* Indicateur si dans la séquence */}
+                              {isInSequence && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center">
+                                  <span className="text-white text-xs font-bold">✓</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Section séquence et contrôles */}
+        <div className="space-y-6">
+          {/* Contrôles de lecture */}
+          <div className="bg-white rounded-lg shadow-lg p-6">
+            <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
+              <Settings size={20} />
+              Contrôles
+            </h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  <span className="flex items-center gap-2">
+                    🎵 Tempo (BPM): <strong>{bpm}</strong>
+                  </span>
+                </label>
+                <input
+                  type="range"
+                  min="60"
+                  max="200"
+                  value={bpm}
+                  onChange={(e) => setBpm(parseInt(e.target.value))}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
+                />
+                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                  <span>60</span>
+                  <span>130</span>
+                  <span>200</span>
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  <span className="flex items-center gap-2">
+                    🎼 Durée par accord: <strong>{repeatsPerMeasure === 1 ? '4 temps' : repeatsPerMeasure === 2 ? '2 temps' : repeatsPerMeasure === 4 ? '1 temps' : `${4/repeatsPerMeasure} temps`}</strong>
+                  </span>
+                </label>
+                <input
+                  type="range"
+                  min="1"
+                  max="8"
+                  value={repeatsPerMeasure}
+                  onChange={(e) => setRepeatsPerMeasure(parseInt(e.target.value))}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
+                />
+                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                  <span>4 temps</span>
+                  <span>1 temps</span>
+                  <span>½ temps</span>
+                </div>
+              </div>
+              
+              <div className="flex gap-2">
+                <button
+                  onClick={playSequence}
+                  disabled={sequence.length === 0 || isPlaying}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-gray-400 transition-colors"
+                >
+                  <Play size={16} />
+                  Play
+                </button>
+                
+                <button
+                  onClick={toggleSequence}
+                  disabled={sequence.length === 0}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 disabled:bg-gray-400 transition-colors"
+                >
+                  {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+                  {isPlaying ? 'Pause' : 'Resume'}
+                </button>
+                
+                <button
+                  onClick={stopSequence}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+                >
+                  <Square size={16} />
+                  Stop
+                </button>
+              </div>
+              
+              <button
+                onClick={clearSequence}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+              >
+                <RotateCcw size={16} />
+                Vider la séquence
+              </button>
+            </div>
+          </div>
+
+          {/* Séquence d'accords */}
+          <div className="bg-white rounded-lg shadow-lg p-6">
+            <h3 className="text-xl font-bold mb-4">Séquence ({sequence.length} accords)</h3>
+            
+            {sequence.length === 0 ? (
+              <p className="text-gray-500 text-center py-8">
+                Aucun accord dans la séquence.<br />
+                Sélectionnez un accord et cliquez sur "Ajouter à la séquence".
+              </p>
+            ) : (
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {sequence.map((chord, index) => (
+                  <div
+                    key={`${chord}-${index}`}
+                    className={`flex items-center justify-between p-3 rounded-lg border-2 transition-all ${
+                      currentChordIndex === index 
+                        ? 'border-green-500 bg-green-50 shadow-lg transform scale-102' 
+                        : 'border-gray-200 bg-gray-50 hover:border-gray-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className={`flex items-center justify-center w-8 h-8 rounded-full font-bold text-sm ${
+                        currentChordIndex === index 
+                          ? 'bg-green-500 text-white' 
+                          : 'bg-gray-300 text-gray-700'
+                      }`}>
+                        {index + 1}
+                      </span>
+                      <span className="font-medium text-lg">{chord}</span>
+                      {currentChordIndex === index && (
+                        <div className="flex items-center gap-1 text-green-600 text-sm">
+                          <span className="animate-pulse">🎵</span>
+                          <span>En cours...</span>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => playChord(chord)}
+                        className="p-2 text-green-600 hover:bg-green-100 rounded-full transition-colors"
+                        title="Écouter cet accord"
+                      >
+                        <Volume2 size={16} />
+                      </button>
+                      <button
+                        onClick={() => removeFromSequenceByIndex(index)}
+                        className="p-2 text-red-600 hover:bg-red-100 rounded-full transition-colors"
+                        title="Supprimer cet accord"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                
+                {/* Résumé de la séquence */}
+                <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="text-sm text-blue-800">
+                    <strong>Aperçu:</strong> {sequence.join(' → ')}
+                  </div>
+                  <div className="text-xs text-blue-600 mt-1">
+                    Durée totale: ~{Math.round((sequence.length * 60 / bpm * 4 / repeatsPerMeasure) * 10) / 10}s par cycle
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      
+      {/* Instructions */}
+      <div className="mt-8 bg-blue-50 border border-blue-200 rounded-lg p-6">
+        <h3 className="text-lg font-bold text-blue-800 mb-2">Comment utiliser l'application</h3>
+        <ul className="text-blue-700 space-y-1">
+          <li>• <strong>Parcourir les accords:</strong> Cliquez sur les catégories pour voir les accords disponibles</li>
+          <li>• <strong>Sélectionner un accord:</strong> Cliquez sur un mini-diagramme pour l'agrandir</li>
+          <li>• <strong>Écouter:</strong> Utilisez "Pré-écouter" pour entendre l'accord sélectionné</li>
+          <li>• <strong>Créer une séquence:</strong> Ajoutez des accords avec "Ajouter à la séquence"</li>
+          <li>• <strong>Gérer la séquence:</strong> Supprimez des accords individuellement avec le bouton poubelle</li>
+          <li>• <strong>Contrôler la lecture:</strong> Réglez le BPM et la durée, puis utilisez Play/Pause/Stop</li>
+        </ul>
+      </div>
+    </div>
+  );
+};
+
+export default UkuleleTabsApp;
